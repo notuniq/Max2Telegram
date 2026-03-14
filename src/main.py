@@ -9,7 +9,12 @@ import logging
 from dotenv import load_dotenv
 import html
 
-from models.max import BaseMaxApiModel, MaxAuthTokenRequest, MaxUserAgent, MaxTokenData, MaxGetMessagesRequest, MaxGetMessagesRequestPayload, MaxGetFileUrlPayload, MaxGetFileUrlRequest
+from models.max import BaseMaxApiModel, MaxAuthTokenRequest, MaxUserAgent, MaxTokenData, MaxGetMessagesRequest, MaxGetMessagesRequestPayload, MaxGetFileUrlPayload, MaxGetFileUrlRequest, MaxGetContactInfoPayload
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) 
+LAST_MSG_FILE = os.path.join(BASE_DIR, 'last_msg_id.txt')
+MAX_TG_TEXT = 4096
+MAX_TG_CAPTION = 1024
 
 load_dotenv()
 
@@ -20,15 +25,20 @@ logging.basicConfig(
 
 def get_last_msg_id():
     try:
-        content = open("src/last_msg_id.txt", "r+").readline().strip()
+        content = open(LAST_MSG_FILE, "r+").readline().strip()
         return content if content else None
     except FileNotFoundError:
         return None
 
 def set_last_msg_id(msg_id):
-    with open("src/last_msg_id.txt", "w") as f:
+    with open(LAST_MSG_FILE, "w") as f:
         f.write(str(msg_id))
 
+async def wait_for_opcode(ws, expected_opcode: int):
+    while True:
+        res = json.loads(await ws.recv())
+        if res.get("opcode") == expected_opcode:
+            return res
 
 async def max_connect():
     url = "wss://ws-api.oneme.ru/websocket"
@@ -64,7 +74,7 @@ async def max_connect():
         seq += 1
 
         res = BaseMaxApiModel(**json.loads(await ws.recv()))
-        logging.info(f"Initial session established: opcode={res.opcode}")
+        logging.info(f"Инициализация сессии: opcode={res.opcode}")
 
         auth_request = MaxAuthTokenRequest(
             seq=seq,
@@ -101,7 +111,7 @@ async def max_connect():
             await ws.send(json.dumps(get_messages_request.model_dump(by_alias=True)))
             seq += 1
 
-            res = json.loads(await ws.recv())
+            res = await wait_for_opcode(ws, 49)
             messages = res.get("payload", {}).get("messages", [])
 
             if not messages:
@@ -121,11 +131,52 @@ async def max_connect():
                 continue
 
             logging.info(f"Новое сообщение! ID: {current_msg_id}")
+            # logging.debug(f"DEBUG сообщения: {last_message}")
+
             set_last_msg_id(current_msg_id)
             last_message_id = current_msg_id
 
+            sender_id = last_message.get("sender")
+
+            contact_request = BaseMaxApiModel(
+                seq=seq,
+                payload=MaxGetContactInfoPayload(contactIds=[sender_id]).model_dump(),
+                cmd=0,
+                ver=11,
+                opcode=32
+            )
+            await ws.send(json.dumps(contact_request.model_dump()))
+            seq += 1
+
+            res_contact = await wait_for_opcode(ws, 32)
+
+            contacts = res_contact.get("payload", {}).get("contacts", [])
+            # logging.debug(res_contact)
+
+            if contacts:
+                contact = contacts[0]
+                names = contact.get("names", [])
+                if names:
+                    name_data = names[0]
+                    full_name = f"{name_data.get('firstName','')} {name_data.get('lastName','')}".strip()
+                    sender_name = full_name or name_data.get("name")
+                else:
+                    sender_name = contact.get("id") 
+            else:
+                sender_name = sender_id
+
+            logging.info(f"Сообщение от: {sender_name}")
+
             text = last_message.get("text", "").strip()
             escaped_text = html.escape(text) if text else None
+            tg_text = f"Сообщение от {sender_name}:\n\n<blockquote>{escaped_text}</blockquote>"
+            tg_caption = tg_text
+
+            if len(tg_text) > MAX_TG_TEXT:
+                tg_text = tg_text[:MAX_TG_TEXT - 3] + "..."
+
+            if len(tg_caption) > MAX_TG_CAPTION:
+                tg_caption = tg_caption[:MAX_TG_CAPTION - 3] + "..."
 
             photos = [
                 {"type": "photo", "media": attach["baseUrl"]}
@@ -141,8 +192,10 @@ async def max_connect():
 
             if photos:
                 if escaped_text:
-                    photos[0]["caption"] = escaped_text
+                    photos[0]["caption"] = tg_caption
                     photos[0]["parse_mode"] = "html"
+                else:
+                    photos[0]["caption"] = f'Фото от {sender_name}'
                 await client.post("/sendMediaGroup", json={
                     "chat_id": os.getenv("TG_CHAT_ID"),
                     "media": photos
@@ -161,7 +214,7 @@ async def max_connect():
                     )
                     await ws.send(json.dumps(request.model_dump()))
                     seq += 1
-                    res_file = json.loads(await ws.recv())
+                    res_file = await wait_for_opcode(ws, 88)
                     file_url = res_file.get("payload", {}).get("url")
                     if not file_url:
                         logging.warning("URL файла не получен")
@@ -174,7 +227,7 @@ async def max_connect():
                         "/sendDocument",
                         data={
                             "chat_id": os.getenv("TG_CHAT_ID"),
-                            "caption": escaped_text or attach["name"]
+                            "caption": f'Файл от {sender_name}'
                         },
                         files={"document": (attach["name"], file_data.content)}
                     )
@@ -182,7 +235,7 @@ async def max_connect():
             elif escaped_text:
                 await client.post("/sendMessage", json={
                     "chat_id": os.getenv("TG_CHAT_ID"),
-                    "text": f"{escaped_text}",
+                    "text": f"{tg_text}",
                     "parse_mode": "html"
                 })
 

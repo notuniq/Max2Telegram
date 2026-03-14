@@ -70,3 +70,9 @@ class MaxGetFileUrlRequest(BaseMaxApiModel):
     cmd: int = 0
     opcode: int = 88
     payload: MaxGetFileUrlPayload
+
+class MaxGetContactInfoPayload(BaseModel):
+    ver: int = 11
+    cmd: int = 0
+    opcode: int = 32
+    contactIds: list[int]
