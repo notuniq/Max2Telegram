@@ -76,3 +76,6 @@ class MaxGetContactInfoPayload(BaseModel):
     cmd: int = 0
     opcode: int = 32
     contactIds: list[int]
+
+class MaxGetGroupInfoPayload(BaseModel):
+    chatIds: list[int]

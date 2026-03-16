@@ -34,6 +34,7 @@ MAX_AUTH_TOKEN=<Ваш токен из MAX>
 MAX_CHAT_ID=<ID чата MAX>
 TG_TOKEN=<Telegram Bot Token>
 TG_CHAT_ID=<ID чата Telegram>
+USER_FILTER_IDS=[<ID пользователей, от которых нужно пересылать сообщения, через запятую>]
 ```
 
 ## Получение MAX_AUTH_TOKEN
@@ -64,6 +65,33 @@ Keep your token secure and store it safely, it can be used by anyone to control 
 ```
 
 ## [Получение TG_CHAT_ID (клик)](https://habr.com/ru/companies/amvera/articles/996686/)
+
+## Получение USER_FILTER_IDs
+1. Настройте файл .env, указав параметры:
+
+- MAX_CHAT_ID
+- MAX_AUTH_TOKEN
+2. Запустите скрипт:
+```bash
+python src/utils/get_group_participants.py
+```
+3. В консоли отобразятся ID и имена всех участников беседы, например:
+```
+1234 - Евгений
+4513 - Мария
+313354 - Андрей
+```
+4. Добавьте нужные ID в переменную USER_FILTER_IDS в .env:
+```
+USER_FILTER_IDs=[4513, 313354]
+```
+### Примечание
+- Если USER_FILTER_IDS указан, бот будет пересылать сообщения только от этих пользователей.
+
+- Если нужно пересылать сообщения от всех участников беседы, оставьте список пустым:
+```
+USER_FILTER_IDS=[]
+```
 
 ## Запуск бота
 ```bash

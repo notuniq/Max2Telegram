@@ -18,6 +18,8 @@ MAX_TG_CAPTION = 1024
 
 load_dotenv()
 
+FILTER_IDS = json.loads(os.getenv("USER_FILTER_IDs", "[]"))
+
 logging.basicConfig(
     format="%(asctime)s %(message)s",
     level=logging.DEBUG,
@@ -136,7 +138,11 @@ async def max_connect():
             set_last_msg_id(current_msg_id)
             last_message_id = current_msg_id
 
-            sender_id = last_message.get("sender")
+            sender_id = int(last_message.get("sender"))
+
+            if FILTER_IDS and sender_id not in FILTER_IDS:
+                logging.info(f"Сообщение от пользователя {sender_id} пропущено из-за фильтра")
+                continue
 
             contact_request = BaseMaxApiModel(
                 seq=seq,
