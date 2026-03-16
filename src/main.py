@@ -8,8 +8,10 @@ from websockets.asyncio.client import connect
 import logging
 from dotenv import load_dotenv
 import html
+import subprocess
+import io
 
-from models.max import BaseMaxApiModel, MaxAuthTokenRequest, MaxUserAgent, MaxTokenData, MaxGetMessagesRequest, MaxGetMessagesRequestPayload, MaxGetFileUrlPayload, MaxGetFileUrlRequest, MaxGetContactInfoPayload
+from models.max import BaseMaxApiModel, MaxAuthTokenRequest, MaxUserAgent, MaxTokenData, MaxGetMessagesRequest, MaxGetMessagesRequestPayload, MaxGetFileUrlPayload, MaxGetFileUrlRequest, MaxGetContactInfoPayload, MaxGetAudioVideoPayload
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) 
 LAST_MSG_FILE = os.path.join(BASE_DIR, 'last_msg_id.txt')
@@ -24,6 +26,14 @@ logging.basicConfig(
     format="%(asctime)s %(message)s",
     level=logging.DEBUG,
 )
+
+headers = {
+    "User-Agent": os.getenv("MAX_USER_AGENT"),
+    "Accept": "audio/webm,audio/ogg,audio/wav,audio/*;q=0.9,application/ogg;q=0.7,video/*;q=0.6,*/*;q=0.5",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Range": "bytes=0-",
+    "Referer": "https://web.max.ru/"
+        }
 
 def get_last_msg_id():
     try:
@@ -41,7 +51,9 @@ async def wait_for_opcode(ws, expected_opcode: int):
         res = json.loads(await ws.recv())
         if res.get("opcode") == expected_opcode:
             return res
-
+        
+ahttp = AsyncClient(timeout=30)
+        
 async def max_connect():
     url = "wss://ws-api.oneme.ru/websocket"
     last_message_id = get_last_msg_id()
@@ -121,131 +133,279 @@ async def max_connect():
                 await asyncio.sleep(3)
                 continue
 
-            last_message = messages[-1]
-            current_msg_id = str(last_message.get("id", ""))
+            messages.sort(key=lambda x: x.get("id"))  
 
-            if last_message.get("link") and last_message["link"]["type"] == "FORWARD":
-                last_message = last_message["link"]["message"]
-
-            if current_msg_id == last_message_id:
-                logging.debug("Нет новых сообщений")
+            if not last_message_id:
+                if messages:
+                    last_message_id = str(messages[-1].get("id"))
+                    set_last_msg_id(last_message_id)
+                    logging.info(f"Инициализация last_message_id: {last_message_id}, ждем новые сообщения...")
                 await asyncio.sleep(3)
                 continue
 
-            logging.info(f"Новое сообщение! ID: {current_msg_id}")
-            # logging.debug(f"DEBUG сообщения: {last_message}")
+            start_index = 0
+            for i, msg in enumerate(messages):
+                if str(msg.get("id")) == last_message_id:
+                    start_index = i + 1
+                    break
+            
+            new_messages = messages[start_index:]
 
-            set_last_msg_id(current_msg_id)
-            last_message_id = current_msg_id
+            for msg in new_messages:
+                current_msg_id = str(msg.get("id", ""))
 
-            sender_id = int(last_message.get("sender"))
+                if msg.get("link") and msg["link"]["type"] == "FORWARD":
+                    msg = msg["link"]["message"]
 
-            if FILTER_IDS and sender_id not in FILTER_IDS:
-                logging.info(f"Сообщение от пользователя {sender_id} пропущено из-за фильтра")
-                continue
+                if current_msg_id == last_message_id:
+                    logging.debug("Нет новых сообщений")
+                    await asyncio.sleep(3)
+                    continue
 
-            contact_request = BaseMaxApiModel(
-                seq=seq,
-                payload=MaxGetContactInfoPayload(contactIds=[sender_id]).model_dump(),
-                cmd=0,
-                ver=11,
-                opcode=32
-            )
-            await ws.send(json.dumps(contact_request.model_dump()))
-            seq += 1
+                logging.info(f"Новое сообщение! ID: {current_msg_id}")
+                #logging.debug(f"DEBUG сообщения: {msg}")
 
-            res_contact = await wait_for_opcode(ws, 32)
+                set_last_msg_id(current_msg_id)
+                last_message_id = current_msg_id
 
-            contacts = res_contact.get("payload", {}).get("contacts", [])
-            # logging.debug(res_contact)
+                sender_id = int(msg.get("sender"))
 
-            if contacts:
-                contact = contacts[0]
-                names = contact.get("names", [])
-                if names:
-                    name_data = names[0]
-                    full_name = f"{name_data.get('firstName','')} {name_data.get('lastName','')}".strip()
-                    sender_name = full_name or name_data.get("name")
+                if FILTER_IDS and sender_id not in FILTER_IDS:
+                    logging.info(f"Сообщение от пользователя {sender_id} пропущено из-за фильтра")
+                    continue
+
+                contact_request = BaseMaxApiModel(
+                    seq=seq,
+                    payload=MaxGetContactInfoPayload(contactIds=[sender_id]).model_dump(),
+                    cmd=0,
+                    ver=11,
+                    opcode=32
+                )
+                await ws.send(json.dumps(contact_request.model_dump()))
+                seq += 1
+
+                res_contact = await wait_for_opcode(ws, 32)
+
+                contacts = res_contact.get("payload", {}).get("contacts", [])
+
+                if contacts:
+                    contact = contacts[0]
+                    names = contact.get("names", [])
+                    if names:
+                        name_data = names[0]
+                        full_name = f"{name_data.get('firstName','')} {name_data.get('lastName','')}".strip()
+                        sender_name = full_name or name_data.get("name")
+                    else:
+                        sender_name = contact.get("id") 
                 else:
-                    sender_name = contact.get("id") 
-            else:
-                sender_name = sender_id
+                    sender_name = sender_id
 
-            logging.info(f"Сообщение от: {sender_name}")
+                logging.info(f"Поймано сообщение от: {sender_name}")
 
-            text = last_message.get("text", "").strip()
-            escaped_text = html.escape(text) if text else None
-            tg_text = f"Сообщение от {sender_name}:\n\n<blockquote>{escaped_text}</blockquote>"
-            tg_caption = tg_text
+                text = msg.get("text", "").strip()
+                escaped_text = html.escape(text) if text else None
+                tg_text = f"Сообщение от {sender_name}:\n\n<blockquote>{escaped_text}</blockquote>"
+                tg_caption = tg_text
 
-            if len(tg_text) > MAX_TG_TEXT:
-                tg_text = tg_text[:MAX_TG_TEXT - 3] + "..."
+                if len(tg_text) > MAX_TG_TEXT:
+                    tg_text = tg_text[:MAX_TG_TEXT - 3] + "..."
 
-            if len(tg_caption) > MAX_TG_CAPTION:
-                tg_caption = tg_caption[:MAX_TG_CAPTION - 3] + "..."
+                if len(tg_caption) > MAX_TG_CAPTION:
+                    tg_caption = tg_caption[:MAX_TG_CAPTION - 3] + "..."
 
-            photos = [
-                {"type": "photo", "media": attach["baseUrl"]}
-                for attach in last_message.get("attaches", [])
-                if attach["_type"] == "PHOTO"
-            ]
+                files = [
+                    attach
+                    for attach in msg.get("attaches", [])
+                    if attach.get("_type") == "FILE"
+                ]
+                
+                contacts_attach = [
+                    attach
+                    for attach in msg.get("attaches", [])
+                    if attach.get("_type") == "CONTACT"
+                ]
 
-            files = [
-                attach
-                for attach in last_message.get("attaches", [])
-                if attach["_type"] == "FILE"
-            ]
+                stickers = [
+                    attach
+                    for attach in msg.get("attaches", [])
+                    if attach.get("_type") == "STICKER" or attach.get("stickerId")
+                ]
 
-            if photos:
-                if escaped_text:
-                    photos[0]["caption"] = tg_caption
-                    photos[0]["parse_mode"] = "html"
-                else:
-                    photos[0]["caption"] = f'Фото от {sender_name}'
-                await client.post("/sendMediaGroup", json={
-                    "chat_id": os.getenv("TG_CHAT_ID"),
-                    "media": photos
-                })
+                audios = [
+                    attach
+                    for attach in msg.get("attaches", [])
+                    if attach.get("_type") == "AUDIO" or attach.get("audioId")
+                ]
 
-            elif files:
-                for attach in files:
-                    file_id = attach["fileId"]
-                    request = MaxGetFileUrlRequest(
-                        seq=seq,
-                        payload=MaxGetFileUrlPayload(
-                            fileId=file_id,
-                            chatId=int(os.getenv("MAX_CHAT_ID")),
-                            messageId=last_message["id"]
-                        )
-                    )
-                    await ws.send(json.dumps(request.model_dump()))
-                    seq += 1
-                    res_file = await wait_for_opcode(ws, 88)
-                    file_url = res_file.get("payload", {}).get("url")
-                    if not file_url:
-                        logging.warning("URL файла не получен")
-                        continue
+                videos = [
+                    attach
+                    for attach in msg.get("attaches", [])
+                    if attach.get("_type") == "VIDEO" or attach.get("videoId")
+                ]
 
-                    async with AsyncClient() as http:
-                        file_data = await http.get(file_url)
+                media = []
+                files_data = {}
+
+                photo_attachments = [attach for attach in msg.get("attaches", []) if attach.get("_type") == "PHOTO" and not attach.get("gif")]
+                gif_attachments = [attach for attach in msg.get("attaches", []) if attach.get("_type") == "PHOTO" and attach.get("gif") and attach.get("mp4Url")]
+                
+                for attach in photo_attachments:
+                    media.append({
+                        "type": "photo",
+                        "media": attach["baseUrl"]
+                    })
+                
+                if gif_attachments:
+                    tasks = [ahttp.get(attach["mp4Url"]) for attach in gif_attachments]
+                    responses = await asyncio.gather(*tasks)
+
+                    for i, resp in enumerate(responses):
+                        attach = gif_attachments[i]
+                        name = f"gif{i}.mp4"
+                        files_data[name] = resp.content
+                        media.append({
+                            "type": "video",
+                            "media": f"attach://{name}"
+                        })
+
+                if media:
+                    if escaped_text:
+                        media[0]["caption"] = tg_caption
+                        media[0]["parse_mode"] = "HTML"
+                    else:
+                        has_gif = any(m["type"] == "video" for m in media)
+                        has_photo = any(m["type"] == "photo" for m in media)
+
+                        if has_gif and has_photo:
+                            caption = f"Фото и GIF от {sender_name}"
+                        elif has_gif:
+                            caption = f"GIF от {sender_name}"
+                        else:
+                            caption = f"Фото от {sender_name}"
+
+                        media[0]["caption"] = caption
+
+                    files = {
+                        name: (name, data, "video/mp4")
+                        for name, data in files_data.items()
+                    }
 
                     await client.post(
-                        "/sendDocument",
+                        "/sendMediaGroup",
                         data={
                             "chat_id": os.getenv("TG_CHAT_ID"),
-                            "caption": f'Файл от {sender_name}'
+                            "media": json.dumps(media)
                         },
-                        files={"document": (attach["name"], file_data.content)}
+                        files=files
                     )
 
-            elif escaped_text:
-                await client.post("/sendMessage", json={
-                    "chat_id": os.getenv("TG_CHAT_ID"),
-                    "text": f"{tg_text}",
-                    "parse_mode": "html"
-                })
+                elif files:
+                    for attach in files:
+                        file_id = attach["fileId"]
+                        request = MaxGetFileUrlRequest(
+                            seq=seq,
+                            payload=MaxGetFileUrlPayload(
+                                fileId=file_id,
+                                chatId=int(os.getenv("MAX_CHAT_ID")),
+                                messageId=msg["id"]
+                            )
+                        )
+                        await ws.send(json.dumps(request.model_dump()))
+                        seq += 1
+                        res_file = await wait_for_opcode(ws, 88)
+                        file_url = res_file.get("payload", {}).get("url")
+                        if not file_url:
+                            logging.warning("URL файла не получен")
+                            continue
 
-            await asyncio.sleep(3)
+                        file_data = await ahttp.get(file_url)
+
+                        await client.post(
+                            "/sendDocument",
+                            data={
+                                "chat_id": os.getenv("TG_CHAT_ID"),
+                                "caption": f'Файл от {sender_name}'
+                            },
+                            files={"document": (attach["name"], file_data.content)}
+                        )
+
+                elif escaped_text:
+                    await client.post("/sendMessage", json={
+                        "chat_id": os.getenv("TG_CHAT_ID"),
+                        "text": f"{tg_text}",
+                        "parse_mode": "HTML"
+                    })
+
+                elif stickers:
+                    sticker = stickers[0]
+                    sticker_id = sticker.get("stickerId")
+                    print(f'{sender_name} отправил стикер с ID: {sticker_id}, пропускаю.')
+                    continue
+
+                elif audios:
+                    audio = audios[0]
+                    audio_id = audio.get("audioId")
+                    audio_url = audio.get("url")
+                    duration = audio.get("duration")
+                    print(f'{sender_name} отправил голосовое сообщение с ID: {audio_id}, длительность: {duration}мс')
+                    if not audio_url:
+                        logging.warning("URL аудио не найден")
+                        continue
+
+
+                    audio_resp = await ahttp.get(audio_url, headers=headers)
+                    if audio_resp.status_code != 200:
+                        logging.warning(f"Не удалось скачать аудио: {audio_resp.status_code}")
+                    else:
+                        mp3_bytes = io.BytesIO(audio_resp.content)
+                        ogg_bytes = io.BytesIO()
+                        process = await asyncio.to_thread(
+                            subprocess.run,
+                            [
+                                "ffmpeg",
+                                "-i", "pipe:0",
+                                "-c:a", "libopus",
+                                "-b:a", "64k",
+                                "-f", "ogg",
+                                "pipe:1"
+                            ],
+                            input=mp3_bytes.read(),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE
+                            )
+                        ogg_bytes.write(process.stdout)
+                        ogg_bytes.seek(0)
+
+                        await client.post(
+                            "/sendVoice",
+                            data={
+                                "chat_id": os.getenv("TG_CHAT_ID"),
+                                "caption": f"Голосовое сообщение от {sender_name}",
+                                "parse_mode": "HTML" 
+                            },
+                            files={
+                                "voice": ("voice.ogg", ogg_bytes.read(), "audio/ogg")
+                                }
+                        )
+
+                elif videos:
+                    video = videos[0]
+                    videoType = video.get("videoType")
+                    video_id = video.get("videoId")
+                    duration = video.get("duration")
+
+                    if videoType == 1:
+                        print(f'{sender_name} отправил видео сообщение с ID: {video_id}, длительность: {duration}мс, пропускаю.')
+ 
+                    elif videoType == 0:
+                        print(f'{sender_name} отправил видео с ID: {video_id}, длительность: {duration}мс, пропускаю.')
+
+                elif contacts_attach:
+                    contact = contacts_attach[0]
+                    contact_name = contact.get("name") or contact.get("firstName")
+                    contact_id = contact.get("contactId")
+                    print(f"{sender_name} отправил контакт: {contact_name} (ID: {contact_id}), пропускаю.")
+                    continue
 
 if __name__ == "__main__":
     try:

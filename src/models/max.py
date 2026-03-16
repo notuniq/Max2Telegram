@@ -72,10 +72,14 @@ class MaxGetFileUrlRequest(BaseMaxApiModel):
     payload: MaxGetFileUrlPayload
 
 class MaxGetContactInfoPayload(BaseModel):
-    ver: int = 11
-    cmd: int = 0
-    opcode: int = 32
     contactIds: list[int]
 
 class MaxGetGroupInfoPayload(BaseModel):
     chatIds: list[int]
+
+class MaxGetAudioVideoPayload(BaseModel):
+    chatId: int
+    messageId: str
+    attachTypes: list[str] = ["VIDEO_MSG","AUDIO"]
+    forward: int = 25
+    backward: int = 25

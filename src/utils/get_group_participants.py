@@ -11,7 +11,7 @@ import logging
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
-from models.max import BaseMaxApiModel, MaxUserAgent, MaxAuthTokenRequest, MaxTokenData
+from models.max import BaseMaxApiModel, MaxUserAgent, MaxAuthTokenRequest, MaxTokenData, MaxGetGroupInfoPayload, MaxGetContactInfoPayload
 
 load_dotenv()
 
@@ -81,9 +81,7 @@ async def max_connect():
             cmd=0,
             ver=11,
             opcode=48,
-            payload={
-                "chatIds": [int(os.getenv("MAX_CHAT_ID"))]
-            }
+            payload=MaxGetGroupInfoPayload(chatIds=[int(os.getenv("MAX_CHAT_ID"))]).model_dump()  
         )
         await ws.send(json.dumps(group_request.model_dump()))
         seq += 1
@@ -102,17 +100,25 @@ async def max_connect():
 
             left_participants = [int(uid) for uid in participants.keys()]
 
-            contact_request = {
-            "ver": 11,
-            "cmd": 0,
-            "seq": seq,
-            "opcode": 32,
-            "payload": {
-                    "contactIds": left_participants
-                }
-            }
+            # contact_request = {
+            # "ver": 11,
+            # "cmd": 0,
+            # "seq": seq,
+            # "opcode": 32,
+            # "payload": {
+            #         "contactIds": left_participants
+            #     }
+            # }
 
-            await ws.send(json.dumps(contact_request))
+            contact_request = BaseMaxApiModel(
+                seq=seq,
+                payload=MaxGetContactInfoPayload(contactIds=left_participants).model_dump(),
+                cmd=0,
+                ver=11,
+                opcode=32
+            )
+
+            await ws.send(json.dumps(contact_request.model_dump()))
             seq += 1
 
             while True:
