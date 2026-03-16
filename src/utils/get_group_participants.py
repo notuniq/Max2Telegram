@@ -90,12 +90,15 @@ async def max_connect():
 
         res_group = await wait_for_opcode(ws, 48)
         res_group_payload = res_group.get("payload", {})
+
         chats = res_group_payload.get("chats", [])
 
         if chats:
             chat = chats[0]  
             owner_id = chat.get("owner")
             participants = chat.get("participants", {})
+            res_group_name = chat.get('title', 'Без названия')
+            print(f"Группа: {res_group_name}, ID владельца: {owner_id}, Кол-во участников: {len(participants)}")
 
             left_participants = [int(uid) for uid in participants.keys()]
 
