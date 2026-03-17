@@ -11,7 +11,8 @@ import logging
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
-from models.max import BaseMaxApiModel, MaxUserAgent, MaxAuthTokenRequest, MaxTokenData, MaxGetGroupInfoPayload, MaxGetContactInfoPayload
+from models.max import BaseApiModel, UserAgent, AuthTokenRequest, TokenData, GetGroupInfoPayload, GetContactInfoPayload
+from models.enum import Opcode
 
 load_dotenv()
 
@@ -36,14 +37,14 @@ async def max_connect():
         origin=Origin("https://web.max.ru"),
     ) as ws:
 
-        initial_session_request = BaseMaxApiModel(
+        initial_session_request = BaseApiModel(
             cmd=0,
             ver=11,
             seq=seq,
-            opcode=6,
+            opcode=Opcode.SESSION_INIT,
             payload={
                 "deviceId": str(uuid4()),
-                "userAgent": MaxUserAgent(
+                "userAgent": UserAgent(
                     deviceType=os.getenv("MAX_DEVICE_TYPE"),
                     locale=os.getenv("MAX_LOCALE"),
                     deviceLocale=os.getenv("MAX_DEVICE_LOCALE"),
@@ -60,9 +61,9 @@ async def max_connect():
         seq += 1
         await ws.recv()  
 
-        auth_request = MaxAuthTokenRequest(
+        auth_request = AuthTokenRequest(
             seq=seq,
-            payload=MaxTokenData(
+            payload=TokenData(
                 interactive=True,
                 token=os.getenv("MAX_AUTH_TOKEN"),
                 chatsCount=40,
@@ -76,12 +77,12 @@ async def max_connect():
         seq += 1
         await ws.recv() 
 
-        group_request = BaseMaxApiModel(
+        group_request = BaseApiModel(
             seq=seq,
             cmd=0,
             ver=11,
-            opcode=48,
-            payload=MaxGetGroupInfoPayload(chatIds=[int(os.getenv("MAX_CHAT_ID"))]).model_dump()  
+            opcode=Opcode.CHAT_INFO,
+            payload=GetGroupInfoPayload(chatIds=[int(os.getenv("MAX_CHAT_ID"))]).model_dump()  
         )
         await ws.send(json.dumps(group_request.model_dump()))
         seq += 1
@@ -110,12 +111,12 @@ async def max_connect():
             #     }
             # }
 
-            contact_request = BaseMaxApiModel(
+            contact_request = BaseApiModel(
                 seq=seq,
-                payload=MaxGetContactInfoPayload(contactIds=left_participants).model_dump(),
+                payload=GetContactInfoPayload(contactIds=left_participants).model_dump(),
                 cmd=0,
                 ver=11,
-                opcode=32
+                opcode=Opcode.CONTACT_INFO
             )
 
             await ws.send(json.dumps(contact_request.model_dump()))

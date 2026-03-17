@@ -11,7 +11,8 @@ import html
 import subprocess
 import io
 
-from models.max import BaseMaxApiModel, MaxAuthTokenRequest, MaxUserAgent, MaxTokenData, MaxGetMessagesRequest, MaxGetMessagesRequestPayload, MaxGetFileUrlPayload, MaxGetFileUrlRequest, MaxGetContactInfoPayload, MaxGetAudioVideoPayload
+from models.max import BaseApiModel, AuthTokenRequest, UserAgent, TokenData, GetMessagesRequest, GetMessagesRequestPayload, GetFileUrlPayload, GetFileUrlRequest, GetContactInfoPayload, GetAudioVideoPayload, GetVideoPayload
+from models.enum import Opcode
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) 
 LAST_MSG_FILE = os.path.join(BASE_DIR, 'last_msg_id.txt')
@@ -24,7 +25,7 @@ FILTER_IDS = json.loads(os.getenv("USER_FILTER_IDs", "[]"))
 
 logging.basicConfig(
     format="%(asctime)s %(message)s",
-    level=logging.DEBUG,
+    level=logging.INFO,
 )
 
 headers = {
@@ -64,14 +65,14 @@ async def max_connect():
         user_agent_header=os.getenv("MAX_USER_AGENT"),
         origin=Origin("https://web.max.ru"),
     ) as ws:
-        initial_session_request = BaseMaxApiModel(
+        initial_session_request = BaseApiModel(
             cmd=0,
             ver=11,
             seq=seq,
-            opcode=6,
+            opcode=Opcode.SESSION_INIT,
             payload={
                 "deviceId": str(uuid4()),
-                "userAgent": MaxUserAgent(
+                "userAgent": UserAgent(
                     deviceType=os.getenv("MAX_DEVICE_TYPE"),
                     locale=os.getenv("MAX_LOCALE"),
                     deviceLocale=os.getenv("MAX_DEVICE_LOCALE"),
@@ -87,12 +88,12 @@ async def max_connect():
         await ws.send(json.dumps(initial_session_request.model_dump()))
         seq += 1
 
-        res = BaseMaxApiModel(**json.loads(await ws.recv()))
+        res = BaseApiModel(**json.loads(await ws.recv()))
         logging.info(f"Инициализация сессии: opcode={res.opcode}")
 
-        auth_request = MaxAuthTokenRequest(
+        auth_request = AuthTokenRequest(
             seq=seq,
-            payload=MaxTokenData(
+            payload=TokenData(
                 interactive=True,
                 token=os.getenv("MAX_AUTH_TOKEN"),
                 chatsCount=40,
@@ -105,17 +106,17 @@ async def max_connect():
         await ws.send(json.dumps(auth_request.model_dump()))
         seq += 1
 
-        res = BaseMaxApiModel(**json.loads(await ws.recv()))
+        res = BaseApiModel(**json.loads(await ws.recv()))
         logging.info(f"Авторизация успешна: opcode={res.opcode}")
 
         logging.info("Запускаю loop сообщений...")
 
-        client = AsyncClient(base_url=f"https://api.telegram.org/bot{os.getenv('TG_TOKEN')}")
+        client = AsyncClient(base_url=f"https://api.telegram.org/bot{os.getenv('TG_TOKEN')}", timeout=60.0)
         
         while True:
-            get_messages_request = MaxGetMessagesRequest(
+            get_messages_request = GetMessagesRequest(
                 seq=seq,
-                payload=MaxGetMessagesRequestPayload(
+                payload=GetMessagesRequestPayload(
                     chatId=int(os.getenv("MAX_CHAT_ID")),
                     forward=0,
                     backward=30,
@@ -129,7 +130,7 @@ async def max_connect():
             messages = res.get("payload", {}).get("messages", [])
 
             if not messages:
-                logging.debug("Нет новых сообщений")
+                logging.info("Нет новых сообщений")
                 await asyncio.sleep(3)
                 continue
 
@@ -165,7 +166,7 @@ async def max_connect():
                     msg = forwarded_msg
 
                 if current_msg_id == last_message_id:
-                    logging.debug("Нет новых сообщений")
+                    logging.info("Нет новых сообщений")
                     await asyncio.sleep(3)
                     continue
 
@@ -181,12 +182,12 @@ async def max_connect():
                     logging.info(f"Сообщение от пользователя {sender_id} пропущено из-за фильтра")
                     continue
 
-                contact_request = BaseMaxApiModel(
+                contact_request = BaseApiModel(
                     seq=seq,
-                    payload=MaxGetContactInfoPayload(contactIds=[sender_id]).model_dump(),
+                    payload=GetContactInfoPayload(contactIds=[sender_id]).model_dump(),
                     cmd=0,
                     ver=11,
-                    opcode=32
+                    opcode=Opcode.CONTACT_INFO
                 )
                 await ws.send(json.dumps(contact_request.model_dump()))
                 seq += 1
@@ -255,7 +256,11 @@ async def max_connect():
 
                 photo_attachments = [attach for attach in msg.get("attaches", []) if attach.get("_type") == "PHOTO" and not attach.get("gif")]
                 gif_attachments = [attach for attach in msg.get("attaches", []) if attach.get("_type") == "PHOTO" and attach.get("gif") and attach.get("mp4Url")]
-                
+                video_attachments = [
+                    attach for attach in msg.get("attaches", [])
+                    if (attach.get("_type") == "VIDEO" or attach.get("videoId")) and attach.get("videoType") == 0
+                ]
+
                 for attach in photo_attachments:
                     media.append({
                         "type": "photo",
@@ -272,7 +277,55 @@ async def max_connect():
                         files_data[name] = resp.content
                         media.append({
                             "type": "video",
-                            "media": f"attach://{name}"
+                            "media": f"attach://{name}",
+                            "is_gif": True
+                        })
+
+                if video_attachments:
+                    for i, video in enumerate(video_attachments):
+                        video_id = video.get("videoId")
+
+                        res_video = BaseApiModel(
+                            seq=seq,
+                            payload=GetVideoPayload(
+                                chatId=int(os.getenv("MAX_CHAT_ID")),
+                                messageId=str(current_msg_id),
+                                videoId=int(video_id)
+                            ).model_dump(),
+                            cmd=0,
+                            ver=11,
+                            opcode=Opcode.VIDEO_PLAY
+                        )
+                        await ws.send(json.dumps(res_video.model_dump()))
+                        seq += 1
+
+                        res_video_data = await wait_for_opcode(ws, 83)
+
+                        payload = res_video_data.get("payload", {})
+                        mp4_keys = [k for k in payload.keys() if k.startswith("MP4_")]
+                        if not mp4_keys:
+                            logging.warning("Нет MP4 форматов")
+                            continue
+                        mp4_keys.sort(key=lambda x: int(x.split("_")[1]), reverse=True)
+
+                        video_url = payload[mp4_keys[0]]
+
+                        if not video_url:
+                            logging.warning("URL видео не получен")
+                            continue
+
+                        resp = await ahttp.get(video_url, headers=headers)
+                        if resp.status_code != 200:
+                            logging.warning(f"Не удалось скачать видео: {resp.status_code}")
+                            continue
+
+                        name = f"video{i}.mp4"
+                        files_data[name] = resp.content
+
+                        media.append({
+                            "type": "video",
+                            "media": f"attach://{name}",
+                            "is_video": True
                         })
 
                 if media:
@@ -280,10 +333,15 @@ async def max_connect():
                         media[0]["caption"] = tg_caption
                         media[0]["parse_mode"] = "HTML"
                     else:
-                        has_gif = any(m["type"] == "video" for m in media)
+                        has_gif = any(m.get("is_gif") for m in media)
+                        has_video = any(m.get("is_video") for m in media)
                         has_photo = any(m["type"] == "photo" for m in media)
 
-                        if has_gif and has_photo:
+                        if has_video and has_photo:
+                            caption = f"Фото и видео от {sender_name}"
+                        elif has_video:
+                            caption = f"Видео от {sender_name}"
+                        elif has_gif and has_photo:
                             caption = f"Фото и GIF от {sender_name}"
                         elif has_gif:
                             caption = f"GIF от {sender_name}"
@@ -293,7 +351,7 @@ async def max_connect():
                         media[0]["caption"] = caption
 
                     files = {
-                        name: (name, data, "video/mp4")
+                        name: (name, io.BytesIO(data), "video/mp4")
                         for name, data in files_data.items()
                     }
 
@@ -309,9 +367,9 @@ async def max_connect():
                 elif files:
                     for attach in files:
                         file_id = attach["fileId"]
-                        request = MaxGetFileUrlRequest(
+                        request = GetFileUrlRequest(
                             seq=seq,
-                            payload=MaxGetFileUrlPayload(
+                            payload=GetFileUrlPayload(
                                 fileId=file_id,
                                 chatId=int(os.getenv("MAX_CHAT_ID")),
                                 messageId=msg["id"]
@@ -346,7 +404,7 @@ async def max_connect():
                 elif stickers:
                     sticker = stickers[0]
                     sticker_id = sticker.get("stickerId")
-                    print(f'{sender_name} отправил стикер с ID: {sticker_id}, пропускаю.')
+                    logging.info(f'{sender_name} отправил стикер с ID: {sticker_id}, пропускаю.')
                     continue
 
                 elif audios:
@@ -354,7 +412,7 @@ async def max_connect():
                     audio_id = audio.get("audioId")
                     audio_url = audio.get("url")
                     duration = audio.get("duration")
-                    print(f'{sender_name} отправил голосовое сообщение с ID: {audio_id}, длительность: {duration}мс')
+                    logging.info(f'{sender_name} отправил голосовое сообщение с ID: {audio_id}, длительность: {duration}мс')
                     if not audio_url:
                         logging.warning("URL аудио не найден")
                         continue
@@ -402,16 +460,69 @@ async def max_connect():
                     duration = video.get("duration")
 
                     if videoType == 1:
-                        print(f'{sender_name} отправил видео сообщение с ID: {video_id}, длительность: {duration}мс, пропускаю.')
- 
-                    elif videoType == 0:
-                        print(f'{sender_name} отправил видео с ID: {video_id}, длительность: {duration}мс, пропускаю.')
+                        logging.info(f'{sender_name} отправил видео сообщение с ID: {video_id}, длительность: {duration}мс')
 
+                        res_video = BaseApiModel(
+                            seq=seq,
+                            payload=GetVideoPayload(
+                                chatId=int(os.getenv("MAX_CHAT_ID")),
+                                messageId=str(current_msg_id),
+                                videoId=int(video_id)
+                            ).model_dump(),
+                            cmd=0,
+                            ver=11,
+                            opcode=Opcode.VIDEO_PLAY
+                        )
+                        await ws.send(json.dumps(res_video.model_dump()))
+                        seq += 1 
+                        res_video_data = await wait_for_opcode(ws, 83)
+
+                        payload = res_video_data.get("payload", {})
+                        mp4_keys = [k for k in payload.keys() if k.startswith("MP4_")]
+                        if not mp4_keys:
+                            logging.warning("Нет MP4 форматов")
+                            continue
+                        mp4_keys.sort(key=lambda x: int(x.split("_")[1]), reverse=True)
+
+                        video_url = payload[mp4_keys[0]]
+
+                        if not video_url:
+                            logging.warning("URL видео не получен")
+                            continue
+
+                        video_resp = await ahttp.get(video_url, headers=headers)
+
+                        if video_resp.status_code != 200:
+                            logging.warning(f"Не удалось скачать видео: {video_resp.status_code}")
+                            continue
+
+                        video_bytes = io.BytesIO(video_resp.content)
+                        video_bytes.seek(0)
+
+                        res_msg = await client.post(
+                            "/sendVideoNote",
+                            data={
+                                "chat_id": os.getenv("TG_CHAT_ID"),
+                                "length": 240
+                            },
+                            files={
+                                "video_note": ("video.mp4", video_bytes, "video/mp4")
+                            }
+                        )
+
+                        msg_id = res_msg.json()["result"]["message_id"]
+
+                        await client.post("/sendMessage", json={
+                            "chat_id": os.getenv("TG_CHAT_ID"),
+                            "text": f"Кружок от {sender_name}",
+                            "reply_to_message_id": msg_id
+                        })
+                    
                 elif contacts_attach:
                     contact = contacts_attach[0]
                     contact_name = contact.get("name") or contact.get("firstName")
                     contact_id = contact.get("contactId")
-                    print(f"{sender_name} отправил контакт: {contact_name} (ID: {contact_id}), пропускаю.")
+                    logging.info(f"{sender_name} отправил контакт: {contact_name} (ID: {contact_id}), пропускаю.")
                     continue
 
 if __name__ == "__main__":

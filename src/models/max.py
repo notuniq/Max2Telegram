@@ -3,7 +3,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class BaseMaxApiModel(BaseModel):
+class BaseApiModel(BaseModel):
     cmd: int
     opcode: int
     payload: Any
@@ -11,7 +11,7 @@ class BaseMaxApiModel(BaseModel):
     ver: int
 
 
-class MaxUserAgent(BaseModel):
+class UserAgent(BaseModel):
     deviceType: str
     locale: str
     deviceLocale: str
@@ -23,12 +23,12 @@ class MaxUserAgent(BaseModel):
     timezone: str
 
 
-class MaxAuthRequest(BaseModel):
-    userAgent: MaxUserAgent
+class AuthRequest(BaseModel):
+    userAgent: UserAgent
     deviceId: str
 
 
-class MaxTokenData(BaseModel):
+class TokenData(BaseModel):
     interactive: bool
     token: str
     chatsCount: int
@@ -38,48 +38,58 @@ class MaxTokenData(BaseModel):
     draftsSync: int
 
 
-class MaxAuthTokenRequest(BaseMaxApiModel):
+class AuthTokenRequest(BaseApiModel):
     cmd: int = 0
     opcode: int = 19
     ver: int = 11
-    payload: MaxTokenData
+    payload: TokenData
 
 
-class MaxGetMessagesRequestPayload(BaseModel):
+class GetMessagesRequestPayload(BaseModel):
     chatId: int
-    from_: int = Field(alias="from", default_factory=lambda: int(datetime.now().timestamp()*1000))
+    from_: int = Field(alias="from", default_factory=lambda: int(datetime.now().timestamp() * 1000))
     forward: int
     backward: int
     getMessages: bool
 
 
-class MaxGetMessagesRequest(BaseMaxApiModel):
+class GetMessagesRequest(BaseApiModel):
     ver: int = 11
     cmd: int = 0
     opcode: int = 49
-    payload: MaxGetMessagesRequestPayload
+    payload: GetMessagesRequestPayload
 
-class MaxGetFileUrlPayload(BaseModel):
+
+class GetFileUrlPayload(BaseModel):
     fileId: int
     chatId: int
     messageId: str
 
 
-class MaxGetFileUrlRequest(BaseMaxApiModel):
+class GetFileUrlRequest(BaseApiModel):
     ver: int = 11
     cmd: int = 0
     opcode: int = 88
-    payload: MaxGetFileUrlPayload
+    payload: GetFileUrlPayload
 
-class MaxGetContactInfoPayload(BaseModel):
+
+class GetContactInfoPayload(BaseModel):
     contactIds: list[int]
 
-class MaxGetGroupInfoPayload(BaseModel):
+
+class GetGroupInfoPayload(BaseModel):
     chatIds: list[int]
 
-class MaxGetAudioVideoPayload(BaseModel):
+
+class GetAudioVideoPayload(BaseModel):
     chatId: int
     messageId: str
-    attachTypes: list[str] = ["VIDEO_MSG","AUDIO"]
+    attachTypes: list[str] = ["VIDEO_MSG", "AUDIO"]
     forward: int = 25
     backward: int = 25
+
+
+class GetVideoPayload(BaseModel):
+    chatId: int
+    messageId: int | str
+    videoId: int
