@@ -153,9 +153,16 @@ async def max_connect():
 
             for msg in new_messages:
                 current_msg_id = str(msg.get("id", ""))
+                original_sender = msg.get("sender")
 
                 if msg.get("link") and msg["link"]["type"] == "FORWARD":
-                    msg = msg["link"]["message"]
+                    forwarded_msg = msg["link"]["message"]
+
+                    forwarded_msg["forwardedSender"] = forwarded_msg.get("sender")
+
+                    forwarded_msg["sender"] = original_sender
+
+                    msg = forwarded_msg
 
                 if current_msg_id == last_message_id:
                     logging.debug("Нет новых сообщений")
