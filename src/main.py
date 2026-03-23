@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 import html
 import subprocess
 import io
+import time
 
 from models.max import BaseApiModel, AuthTokenRequest, UserAgent, TokenData, GetMessagesRequest, GetMessagesRequestPayload, GetFileUrlPayload, GetFileUrlRequest, GetContactInfoPayload, GetAudioVideoPayload, GetVideoPayload
 from models.enum import Opcode
@@ -49,7 +50,12 @@ def set_last_msg_id(msg_id):
 
 async def wait_for_opcode(ws, expected_opcode: int):
     while True:
-        res = json.loads(await ws.recv())
+        try:
+            data = await asyncio.wait_for(ws.recv(), timeout=30)
+        except asyncio.TimeoutError:
+            raise Exception("WS timeout")
+
+        res = json.loads(data)
         if res.get("opcode") == expected_opcode:
             return res
         
@@ -64,6 +70,8 @@ async def max_connect():
         url,
         user_agent_header=os.getenv("MAX_USER_AGENT"),
         origin=Origin("https://web.max.ru"),
+        ping_interval=20,
+        ping_timeout=20,
     ) as ws:
         initial_session_request = BaseApiModel(
             cmd=0,
@@ -526,9 +534,11 @@ async def max_connect():
                     continue
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(max_connect())
-    except KeyboardInterrupt:
-        logging.info("Приложение остановлено")
-    except Exception as e:
-        logging.error(f"Ошибка приложения: {e}")
+    while True:
+        try:
+            asyncio.run(max_connect())
+        except KeyboardInterrupt:
+            logging.info("Приложение остановлено")
+        except Exception as e:
+            logging.error(f"Ошибка приложения: {e}")
+            time.sleep(5)
