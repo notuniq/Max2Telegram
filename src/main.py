@@ -167,11 +167,16 @@ async def max_connect():
                 if msg.get("link") and msg["link"]["type"] == "FORWARD":
                     forwarded_msg = msg["link"]["message"]
 
+                    msg_chatId = msg["link"].get("chatId")
                     forwarded_msg["forwardedSender"] = forwarded_msg.get("sender")
-
                     forwarded_msg["sender"] = original_sender
 
                     msg = forwarded_msg
+
+                else:
+                    msg_chatId = int(os.getenv("MAX_CHAT_ID"))
+
+                print(msg)
 
                 if current_msg_id == last_message_id:
                     logging.info("Нет новых сообщений")
@@ -296,7 +301,7 @@ async def max_connect():
                         res_video = BaseApiModel(
                             seq=seq,
                             payload=GetVideoPayload(
-                                chatId=int(os.getenv("MAX_CHAT_ID")),
+                                chatId=int(msg_chatId),
                                 messageId=str(current_msg_id),
                                 videoId=int(video_id)
                             ).model_dump(),
@@ -379,7 +384,7 @@ async def max_connect():
                             seq=seq,
                             payload=GetFileUrlPayload(
                                 fileId=file_id,
-                                chatId=int(os.getenv("MAX_CHAT_ID")),
+                                chatId=int(msg_chatId),
                                 messageId=msg["id"]
                             )
                         )
@@ -473,7 +478,7 @@ async def max_connect():
                         res_video = BaseApiModel(
                             seq=seq,
                             payload=GetVideoPayload(
-                                chatId=int(os.getenv("MAX_CHAT_ID")),
+                                chatId=int(msg_chatId),
                                 messageId=str(current_msg_id),
                                 videoId=int(video_id)
                             ).model_dump(),
